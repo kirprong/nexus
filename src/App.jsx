@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import io from 'socket.io-client';
 
 // --- CONFIG ---
-const SOCKET_URL = 'http://localhost:3001';
+const SOCKET_URL = window.location.hostname === 'localhost' ? 'http://localhost:3001' : '';
 
 const NexusChat = () => {
     const [messages, setMessages] = useState([

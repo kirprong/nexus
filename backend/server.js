@@ -38,6 +38,7 @@ const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 app.use(cors());
 app.use(express.json());
 app.use('/slova', express.static(path.join(__dirname, '../slova')));
+app.use(express.static(path.join(__dirname, '../dist')));
 
 // --- CONFIG ---
 const multer_upload = Multer({ storage: Multer.memoryStorage() });
@@ -333,6 +334,16 @@ app.post('/speak', async (req, res) => {
         stream.pipe(res);
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// --- SPA FALLBACK ---
+app.get('*', (req, res) => {
+    const indexPath = path.join(__dirname, '../dist', 'index.html');
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.send('Nexus Backend Server Online (Socket.io Enabled). Frontend not built yet.');
     }
 });
 
