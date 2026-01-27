@@ -6,6 +6,8 @@ const FormData = require('form-data');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require("msedge-tts");
 const http = require('http'); // Import http
 const { Server } = require("socket.io"); // Import socket.io
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const cleanTextForTTS = (text) => {
@@ -35,6 +37,7 @@ const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 // --- MIDDLEWARE ---
 app.use(cors());
 app.use(express.json());
+app.use('/slova', express.static(path.join(__dirname, '../slova')));
 
 // --- CONFIG ---
 const multer_upload = Multer({ storage: Multer.memoryStorage() });
@@ -255,6 +258,18 @@ app.post('/transcribe', multer_upload.single('file'), async (req, res) => {
         console.error("STT Error:", error);
         res.status(500).json({ error: error.message });
     }
+});
+
+app.get('/fillers', (req, res) => {
+    const slovaDir = path.join(__dirname, '../slova');
+    fs.readdir(slovaDir, (err, files) => {
+        if (err) {
+            console.error("Error reading slova directory:", err);
+            return res.status(500).json({ error: "Failed to list fillers" });
+        }
+        const audioFiles = files.filter(file => file.endsWith('.mp3') || file.endsWith('.wav'));
+        res.json(audioFiles);
+    });
 });
 
 app.post('/speak', async (req, res) => {

@@ -23,6 +23,9 @@ const NexusChat = () => {
     const isPlayingRef = useRef(false);
     const nextExpectedIndexRef = useRef(0); // Sequence tracker
     const currentAudioRef = useRef(null); // To stop audio if needed
+    const fillerAudioRef = useRef(null); // Reference for filler audio
+    const fillerFilesRef = useRef([]); // Store list of filler files
+
 
     // Initial connection to Socket.io
     useEffect(() => {
@@ -37,6 +40,16 @@ const NexusChat = () => {
             console.log("Socket disconnected");
             setSocketConnected(false);
         });
+
+        // Load filler files
+        fetch(`${SOCKET_URL}/fillers`)
+            .then(res => res.json())
+            .then(files => {
+                fillerFilesRef.current = files;
+                console.log("Loaded filler files:", files);
+            })
+            .catch(err => console.error("Failed to load fillers:", err));
+
 
         // --- REAL-TIME STREAMING EVENTS ---
 
@@ -56,6 +69,9 @@ const NexusChat = () => {
 
         // 2. AUDIO STREAM
         socketRef.current.on('audio_chunk', (data) => {
+            // Stop filler sound immediately when first audio chunk arrives
+            stopFillerSound();
+
             // data: { audio: base64, text: string, index: number }
             const byteCharacters = atob(data.audio);
             const byteNumbers = new Array(byteCharacters.length);
@@ -222,6 +238,31 @@ const NexusChat = () => {
     };
 
 
+    const playFillerSound = () => {
+        if (fillerFilesRef.current.length === 0) return;
+        const randomFile = fillerFilesRef.current[Math.floor(Math.random() * fillerFilesRef.current.length)];
+        const audio = new Audio(`${SOCKET_URL}/slova/${randomFile}`);
+        fillerAudioRef.current = audio;
+        audio.volume = 0.5; // Lower volume for fillers
+        audio.play().catch(e => console.error("Filler play error:", e));
+
+        // Loop randomly? Or just play one?
+        // "slova... kotorye vkluchayutsya sluchayno" - implies maybe one or sequence.
+        // Let's play one, and if it ends and we are still loading, play another.
+        audio.onended = () => {
+            if (isLoading) {
+                playFillerSound();
+            }
+        };
+    };
+
+    const stopFillerSound = () => {
+        if (fillerAudioRef.current) {
+            fillerAudioRef.current.pause();
+            fillerAudioRef.current = null;
+        }
+    };
+
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
@@ -262,6 +303,9 @@ const NexusChat = () => {
             message: textToSend,
             history: apiHistory
         });
+
+        // Start filler sound
+        playFillerSound();
 
         // We will receive 'text_chunk' events shortly
     };
