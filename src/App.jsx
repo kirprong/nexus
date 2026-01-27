@@ -167,11 +167,12 @@ const NexusChat = () => {
             await audio.play();
             // Playback started, metadata should be ready
             const duration = audio.duration;
+            const typingSpeedMultiplier = 0.93; // 0.9 means 10% faster printing
             const validDuration = (duration && duration !== Infinity && !isNaN(duration))
-                ? duration * 1000
-                : (text.length * 60); // Fallback: 60ms per char
+                ? (duration * 1000) * typingSpeedMultiplier
+                : (text.length * 54); // Fallback: 54ms per char (was 60)
 
-            startTypewriter(text, Math.max(0, validDuration - 100));
+            startTypewriter(text, Math.max(0, validDuration - 100)); // Still keep -100ms offset for safety
         } catch (e) {
             console.error("Autoplay failed", e);
             // Fallback: show text immediately
