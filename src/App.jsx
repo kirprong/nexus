@@ -16,6 +16,7 @@ const NexusChat = () => {
     const mediaRecorderRef = useRef(null);
     const audioChunksRef = useRef([]);
     const socketRef = useRef(null);
+    const typewriterRef = useRef(null); // To manage typing interval
 
     // --- AUDIO QUEUE SYSTEM ---
     const audioQueueRef = useRef({}); // Using object for indexed storage
@@ -39,29 +40,18 @@ const NexusChat = () => {
 
         // --- REAL-TIME STREAMING EVENTS ---
 
-        // 1. TEXT STREAM
+        // 1. TEXT STREAM (Ignored for display now, only used to ensure assistant bubble exists)
         socketRef.current.on('text_chunk', (chunk) => {
             setMessages(prev => {
+                // Ensure there is an assistant message bubble to type into later
                 const lastMsg = prev[prev.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.isFinal) {
-                    // Update existing message
-                    const updatedMsg = { ...lastMsg, content: lastMsg.content + chunk };
-                    return [...prev.slice(0, -1), updatedMsg];
-                } else {
-                    // New chunk for a new message block (or first chunk)
-                    // If the very last message was user, we add a new assistant message
-                    if (prev.length > 0 && prev[prev.length - 1].role === 'user') {
-                        return [...prev, { role: 'assistant', content: chunk, isFinal: false }];
-                    }
-                    // If we already have an assistant message that was marked final (unlikely in stream) or system
-                    // Just append to the last one if it's assistant, otherwise new
-                    if (lastMsg.role === 'assistant') {
-                        return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + chunk }];
-                    }
-                    return [...prev, { role: 'assistant', content: chunk, isFinal: false }];
+                if (!lastMsg || lastMsg.role !== 'assistant') {
+                    // Add a placeholder that we will fill with the synchronized text
+                    return [...prev, { role: 'assistant', content: '', isFinal: false }];
                 }
+                return prev;
             });
-            scrollToBottom();
+            // We do NOT append text here anymore. We wait for audio_chunk.
         });
 
         // 2. AUDIO STREAM
@@ -75,8 +65,8 @@ const NexusChat = () => {
             const byteArray = new Uint8Array(byteNumbers);
             const blob = new Blob([byteArray], { type: 'audio/webm' });
 
-            // Store in indexed queue
-            audioQueueRef.current[data.index] = blob;
+            // Store in indexed queue with TEXT
+            audioQueueRef.current[data.index] = { blob, text: data.text };
 
             // Check if we can play
             if (!isPlayingRef.current) {
@@ -104,28 +94,26 @@ const NexusChat = () => {
 
         return () => {
             socketRef.current.disconnect();
+            if (typewriterRef.current) clearInterval(typewriterRef.current);
         };
     }, []);
 
     // --- AUDIO PLAYBACK LOGIC ---
-    const queueAudio = (blob) => {
-        audioQueueRef.current.push(blob);
-        if (!isPlayingRef.current) {
-            playNextAudio();
-        }
-    };
+    // (queueAudio is no longer used directly from outside, but we keep structure if needed)
 
     const playNextAudio = async () => {
         const index = nextExpectedIndexRef.current;
-        const blob = audioQueueRef.current[index];
+        const item = audioQueueRef.current[index]; // item is { blob, text }
 
-        if (!blob) {
+        if (!item) {
             isPlayingRef.current = false;
             return;
         }
 
+        const { blob, text } = item;
+
         isPlayingRef.current = true;
-        // Remove from queue once we start playing it
+        // Remove from queue
         delete audioQueueRef.current[index];
         nextExpectedIndexRef.current++;
 
@@ -133,27 +121,104 @@ const NexusChat = () => {
         const audio = new Audio(url);
         currentAudioRef.current = audio;
 
-        audio.onended = () => {
+        // Cleanup function for when this audio ends
+        const handleEnd = () => {
             URL.revokeObjectURL(url);
             currentAudioRef.current = null;
+            if (typewriterRef.current) clearInterval(typewriterRef.current);
+
+            // Ensure full text is displayed (fixing any typewriter rounding errors) or handled in typeWriter 'done'
             playNextAudio();
         };
 
+        audio.onended = handleEnd;
+
         audio.onerror = (e) => {
             console.error("Audio playback error", e);
-            URL.revokeObjectURL(url);
-            currentAudioRef.current = null;
-            playNextAudio();
+            // Fallback: show text immediately
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + text }];
+                } else {
+                    return [...prev, { role: 'assistant', content: text, isFinal: false }];
+                }
+            });
+            handleEnd();
         };
 
         try {
             await audio.play();
+            // Playback started, metadata should be ready
+            const duration = audio.duration;
+            const validDuration = (duration && duration !== Infinity && !isNaN(duration))
+                ? duration * 1000
+                : (text.length * 60); // Fallback: 60ms per char
+
+            startTypewriter(text, Math.max(0, validDuration - 100));
         } catch (e) {
             console.error("Autoplay failed", e);
-            isPlayingRef.current = false;
-            currentAudioRef.current = null;
-            playNextAudio();
+            // Fallback: show text immediately
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + text }];
+                } else {
+                    return [...prev, { role: 'assistant', content: text, isFinal: false }];
+                }
+            });
+            handleEnd();
         }
+    };
+
+    const startTypewriter = (textToType, durationMs) => {
+        const startTime = Date.now();
+        const totalChars = textToType.length;
+        let charIndex = 0;
+        const updateInterval = 30; // 30ms updates for smoothness
+
+        if (typewriterRef.current) clearInterval(typewriterRef.current);
+
+        typewriterRef.current = setInterval(() => {
+            const elapsed = Date.now() - startTime;
+            const progress = Math.min(elapsed / durationMs, 1);
+            const targetIndex = Math.floor(progress * totalChars);
+
+            if (targetIndex > charIndex) {
+                const charsToAdd = textToType.substring(charIndex, targetIndex);
+
+                setMessages(prev => {
+                    const lastMsg = prev[prev.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                        return [...prev.slice(0, -1), {
+                            ...lastMsg,
+                            content: lastMsg.content + charsToAdd
+                        }];
+                    } else {
+                        // Create if somehow missing
+                        return [...prev, { role: 'assistant', content: charsToAdd, isFinal: false }];
+                    }
+                });
+                scrollToBottom();
+                charIndex = targetIndex;
+            }
+
+            if (progress >= 1) {
+                clearInterval(typewriterRef.current);
+                // Flush remaining
+                if (charIndex < totalChars) {
+                    const remaining = textToType.substring(charIndex);
+                    setMessages(prev => {
+                        const lastMsg = prev[prev.length - 1];
+                        if (lastMsg && lastMsg.role === 'assistant') {
+                            return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + remaining }];
+                        }
+                        return prev;
+                    });
+                    scrollToBottom();
+                }
+            }
+        }, updateInterval);
     };
 
 
@@ -172,6 +237,10 @@ const NexusChat = () => {
         if (currentAudioRef.current) {
             currentAudioRef.current.pause();
             currentAudioRef.current = null;
+        }
+        if (typewriterRef.current) {
+            clearInterval(typewriterRef.current);
+            typewriterRef.current = null;
         }
         audioQueueRef.current = {};
         nextExpectedIndexRef.current = 0;
