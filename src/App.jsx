@@ -26,7 +26,7 @@ const NexusChat = () => {
     const fillerAudioRef = useRef(null); // Reference for filler audio
     const fillerFilesRef = useRef([]); // Store list of filler files
     const isWaitingForResponseRef = useRef(false); // Ref to track waiting state for fillers
-
+    const isInterruptedRef = useRef(false); // Track interruption state
 
     // Initial connection to Socket.io
     useEffect(() => {
@@ -56,6 +56,8 @@ const NexusChat = () => {
 
         // 1. TEXT STREAM (Ignored for display now, only used to ensure assistant bubble exists)
         socketRef.current.on('text_chunk', (chunk) => {
+            if (isInterruptedRef.current) return; // Internet silence
+
             setMessages(prev => {
                 // Ensure there is an assistant message bubble to type into later
                 const lastMsg = prev[prev.length - 1];
@@ -70,6 +72,8 @@ const NexusChat = () => {
 
         // 2. AUDIO STREAM
         socketRef.current.on('audio_chunk', (data) => {
+            if (isInterruptedRef.current) return; // Drop packet
+
             // Stop filler sound immediately when first audio chunk arrives
             isWaitingForResponseRef.current = false;
             stopFillerSound();
@@ -93,6 +97,7 @@ const NexusChat = () => {
         });
 
         socketRef.current.on('stream_end', () => {
+            if (isInterruptedRef.current) return;
             setIsLoading(false);
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
@@ -105,6 +110,7 @@ const NexusChat = () => {
         });
 
         socketRef.current.on('error', (err) => {
+            if (isInterruptedRef.current) return;
             console.error("Socket Error:", err);
             isWaitingForResponseRef.current = false;
             stopFillerSound();
@@ -296,6 +302,9 @@ const NexusChat = () => {
         nextExpectedIndexRef.current = 0;
         isPlayingRef.current = false;
 
+        // Reset interruption flag for new turn
+        isInterruptedRef.current = false;
+
         setIsLoading(true);
 
         // Add User Message
@@ -322,7 +331,37 @@ const NexusChat = () => {
 
     // --- STT LOGIC (Keep existing /transcribe POST) ---
     const startRecording = async () => {
-        if (isLoading) return;
+        // if (isLoading) return; // Allow interruption
+
+        // Interruption Logic
+        if (isLoading || isPlayingRef.current) {
+            console.log("Interrupting previous response...");
+            socketRef.current.emit('interrupt');
+
+            // Stop Audio
+            if (currentAudioRef.current) {
+                currentAudioRef.current.pause();
+                currentAudioRef.current = null;
+            }
+
+            // Stop Filler
+            stopFillerSound();
+            isWaitingForResponseRef.current = false;
+
+            // Stop Typing
+            if (typewriterRef.current) {
+                clearInterval(typewriterRef.current);
+                typewriterRef.current = null;
+            }
+
+            // Clear Playback Queue
+            audioQueueRef.current = {};
+            isPlayingRef.current = false;
+
+            // Allow new request to start fresh
+            setIsLoading(false);
+        }
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorderRef.current = new MediaRecorder(stream);
@@ -458,14 +497,14 @@ const NexusChat = () => {
                     onMouseLeave={stopRecording}
                     onTouchStart={startRecording}
                     onTouchEnd={stopRecording}
-                    disabled={isLoading && !isRecording}
+                    disabled={!socketConnected}
                     className={`
                         w-full py-6 font-bold tracking-widest uppercase transition-all duration-200 text-sm border
                         ${isRecording
                             ? 'bg-[#D62828]/20 text-[#D62828] border-[#D62828] shadow-[0_0_20px_rgba(214,40,40,0.3)]'
                             : 'bg-[#1a1e24] text-[#00ADB5] border-[#222831] hover:bg-[#222831] hover:text-[#00D4E0] hover:border-[#00ADB5]/50'
                         }
-                        ${(isLoading && !isRecording) ? 'opacity-50 cursor-not-allowed' : ''}
+                        ${(!socketConnected) ? 'opacity-50 cursor-not-allowed' : ''}
                     `}
                     style={{ fontFamily: 'Helvetica, sans-serif' }}
                 >

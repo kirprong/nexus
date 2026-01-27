@@ -68,9 +68,34 @@ You are "Nexus"—not an assistant, chatbot, or language model, but a second con
 io.on('connection', (socket) => {
     console.log(`[Socket] Client connected: ${socket.id}`);
 
+    socket.on('interrupt', () => {
+        console.log(`[Socket] Interruption signal received.`);
+        if (socket.activeStream) {
+            try {
+                socket.activeStream.destroy(); // Stop the Mistral stream
+            } catch (e) {
+                console.error("Error destroying stream:", e);
+            }
+            socket.activeStream = null;
+        }
+        socket.activeRequestId = null; // Invalidate current request
+    });
+
     socket.on('chat_message', async (data) => {
         const { message, history } = data;
         console.log(`[Socket] Received: ${message}`);
+
+        // Interrupt previous if any
+        if (socket.activeStream) {
+            try {
+                socket.activeStream.destroy();
+            } catch (e) { }
+            socket.activeStream = null;
+        }
+
+        // Set new Request ID
+        const currentRequestId = Date.now();
+        socket.activeRequestId = currentRequestId;
 
         // Construct messages array
         let messages = [];
@@ -105,11 +130,10 @@ io.on('connection', (socket) => {
 
             // Stream processing
             const reader = response.body; // Node-fetch returns a stream on .body
+            socket.activeStream = reader; // Store stream for interruption
 
             let buffer = "";
             let sentenceBuffer = "";
-
-
 
             // Process the stream manually (since response.body is a Node stream)
             let streamBuffer = "";
@@ -117,6 +141,9 @@ io.on('connection', (socket) => {
 
             // Helper to generate audio for a chunk
             const generateAndEmitAudio = async (text, index) => {
+                // Check for interruption before generating
+                if (socket.activeRequestId !== currentRequestId) return;
+
                 try {
                     const localTts = new MsEdgeTTS();
                     await localTts.setMetadata("ru-RU-DmitryNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
@@ -125,6 +152,9 @@ io.on('connection', (socket) => {
                     const chunks = [];
                     ttsStream.audioStream.on('data', (chunk) => chunks.push(chunk));
                     ttsStream.audioStream.on('end', () => {
+                        // Check for interruption before emitting
+                        if (socket.activeRequestId !== currentRequestId) return;
+
                         const audioBuffer = Buffer.concat(chunks);
                         socket.emit('audio_chunk', {
                             audio: audioBuffer.toString('base64'),
@@ -134,11 +164,16 @@ io.on('connection', (socket) => {
                     });
 
                 } catch (e) {
-                    console.error("TTS generation error for chunk:", e);
+                    // TTS errors are often due to interruptions closing resources
+                    if (socket.activeRequestId === currentRequestId) {
+                        console.error("TTS generation error for chunk:", e);
+                    }
                 }
             };
 
             reader.on('data', (chunk) => {
+                if (socket.activeRequestId !== currentRequestId) return; // Ignore if interrupted
+
                 streamBuffer += chunk.toString();
 
                 const lines = streamBuffer.split('\n');
@@ -158,6 +193,7 @@ io.on('connection', (socket) => {
                             const content = json.choices[0]?.delta?.content || "";
 
                             if (content) {
+                                if (socket.activeRequestId !== currentRequestId) return;
                                 socket.emit('text_chunk', content);
                                 sentenceBuffer += content;
 
@@ -182,17 +218,29 @@ io.on('connection', (socket) => {
             });
 
             reader.on('end', () => {
+                if (socket.activeRequestId !== currentRequestId) return;
+
                 const cleaned = cleanTextForTTS(sentenceBuffer);
                 if (cleaned) {
                     generateAndEmitAudio(cleaned, sentenceCounter++);
                 }
                 socket.emit('stream_end');
                 console.log("[Socket] Stream finished");
+                socket.activeStream = null;
+            });
+
+            reader.on('error', (err) => {
+                // Abort errors are expected on interruption
+                if (socket.activeRequestId === currentRequestId) {
+                    console.error("Stream error:", err);
+                }
             });
 
         } catch (error) {
             console.error("[Socket Error]", error);
-            socket.emit('error', error.message);
+            if (socket.activeRequestId === currentRequestId) {
+                socket.emit('error', error.message);
+            }
         }
     });
 });
