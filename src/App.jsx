@@ -25,6 +25,7 @@ const NexusChat = () => {
     const currentAudioRef = useRef(null); // To stop audio if needed
     const fillerAudioRef = useRef(null); // Reference for filler audio
     const fillerFilesRef = useRef([]); // Store list of filler files
+    const isWaitingForResponseRef = useRef(false); // Ref to track waiting state for fillers
 
 
     // Initial connection to Socket.io
@@ -70,6 +71,7 @@ const NexusChat = () => {
         // 2. AUDIO STREAM
         socketRef.current.on('audio_chunk', (data) => {
             // Stop filler sound immediately when first audio chunk arrives
+            isWaitingForResponseRef.current = false;
             stopFillerSound();
 
             // data: { audio: base64, text: string, index: number }
@@ -104,6 +106,8 @@ const NexusChat = () => {
 
         socketRef.current.on('error', (err) => {
             console.error("Socket Error:", err);
+            isWaitingForResponseRef.current = false;
+            stopFillerSound();
             setMessages(prev => [...prev, { role: 'system_error', content: `Error: ${err}` }]);
             setIsLoading(false);
         });
@@ -240,18 +244,22 @@ const NexusChat = () => {
 
 
     const playFillerSound = () => {
-        if (fillerFilesRef.current.length === 0) return;
+        if (!isWaitingForResponseRef.current || fillerFilesRef.current.length === 0) return;
+        if (fillerAudioRef.current) return; // Don't stack fillers
+
         const randomFile = fillerFilesRef.current[Math.floor(Math.random() * fillerFilesRef.current.length)];
         const audio = new Audio(`${SOCKET_URL}/slova/${randomFile}`);
         fillerAudioRef.current = audio;
         audio.volume = 0.5; // Lower volume for fillers
-        audio.play().catch(e => console.error("Filler play error:", e));
+        audio.play().catch(e => {
+            console.error("Filler play error:", e);
+            fillerAudioRef.current = null;
+        });
 
-        // Loop randomly? Or just play one?
-        // "slova... kotorye vkluchayutsya sluchayno" - implies maybe one or sequence.
-        // Let's play one, and if it ends and we are still loading, play another.
         audio.onended = () => {
-            if (isLoading) {
+            fillerAudioRef.current = null; // Important to clear this!
+            if (isWaitingForResponseRef.current) {
+                console.log("Playing next filler...");
                 playFillerSound();
             }
         };
@@ -306,6 +314,7 @@ const NexusChat = () => {
         });
 
         // Start filler sound
+        isWaitingForResponseRef.current = true;
         playFillerSound();
 
         // We will receive 'text_chunk' events shortly
@@ -346,6 +355,8 @@ const NexusChat = () => {
 
     const sendAudioToBackend = async (blob) => {
         setIsLoading(true); // Temporary loading state for STT
+        isWaitingForResponseRef.current = true;
+        playFillerSound();
         try {
             const formData = new FormData();
             formData.append('file', blob, 'recording.wav');
@@ -367,11 +378,15 @@ const NexusChat = () => {
             if (data.text) {
                 await handleSendMessage(data.text);
             } else {
+                isWaitingForResponseRef.current = false;
+                stopFillerSound();
                 setMessages(prev => [...prev, { role: 'system_error', content: 'Voice unrecognizable.' }]);
             }
 
         } catch (error) {
             console.error("Transcription error:", error);
+            isWaitingForResponseRef.current = false;
+            stopFillerSound();
             setMessages(prev => [...prev, { role: 'system_error', content: 'Error: Voice processing failed.' }]);
             setIsLoading(false);
         }
