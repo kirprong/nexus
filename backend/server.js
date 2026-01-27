@@ -117,7 +117,7 @@ io.on('connection', (socket) => {
                 try {
                     const localTts = new MsEdgeTTS();
                     await localTts.setMetadata("ru-RU-DmitryNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
-                    const ttsStream = await localTts.toStream(text);
+                    const ttsStream = await localTts.toStream(text, { rate: "+20%", pitch: "-5Hz" });
 
                     const chunks = [];
                     ttsStream.audioStream.on('data', (chunk) => chunks.push(chunk));
@@ -265,7 +265,7 @@ app.post('/speak', async (req, res) => {
         if (!cleanedText) return res.status(200).send(); // Or some empty audio
         const localTts = new MsEdgeTTS();
         await localTts.setMetadata("ru-RU-DmitryNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
-        const stream = (await localTts.toStream(cleanedText)).audioStream;
+        const stream = (await localTts.toStream(cleanedText, { rate: "+20%", pitch: "-5Hz" })).audioStream;
         res.setHeader('Content-Type', 'audio/webm');
         stream.pipe(res);
     } catch (error) {
