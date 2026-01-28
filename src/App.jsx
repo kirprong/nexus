@@ -75,8 +75,11 @@ const NexusChat = () => {
         socketRef.current.on('audio_chunk', (data) => {
             if (isInterruptedRef.current) return;
 
-            isWaitingForResponseRef.current = false;
-            stopFillerSound();
+            // Stop fillers only when the FIRST chunk (index 0) arrives
+            if (data.index === 0) {
+                isWaitingForResponseRef.current = false;
+                stopFillerSound();
+            }
 
             let blob = null;
             if (data.audio) {
