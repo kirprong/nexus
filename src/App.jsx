@@ -72,25 +72,28 @@ const NexusChat = () => {
 
         // 2. AUDIO STREAM
         socketRef.current.on('audio_chunk', (data) => {
-            if (isInterruptedRef.current) return; // Drop packet
+            if (isInterruptedRef.current) return;
 
-            // Stop filler sound immediately when first audio chunk arrives
             isWaitingForResponseRef.current = false;
             stopFillerSound();
 
-            // data: { audio: base64, text: string, index: number }
-            const byteCharacters = atob(data.audio);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            let blob = null;
+            if (data.audio) {
+                try {
+                    const byteCharacters = atob(data.audio);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    blob = new Blob([byteArray], { type: 'audio/webm' });
+                } catch (e) {
+                    console.error("Failed to decode audio base64", e);
+                }
             }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: 'audio/webm' });
 
-            // Store in indexed queue with TEXT
             audioQueueRef.current[data.index] = { blob, text: data.text };
 
-            // Check if we can play
             if (!isPlayingRef.current) {
                 playNextAudio();
             }
@@ -99,10 +102,14 @@ const NexusChat = () => {
         socketRef.current.on('stream_end', () => {
             if (isInterruptedRef.current) return;
             setIsLoading(false);
+
+            // Safety: stop fillers if they are still playing somehow
+            isWaitingForResponseRef.current = false;
+            stopFillerSound();
+
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant') {
-                    // Mark as final
                     return [...prev.slice(0, -1), { ...lastMsg, isFinal: true }];
                 }
                 return prev;
@@ -137,65 +144,85 @@ const NexusChat = () => {
         }
 
         const { blob, text } = item;
-
         isPlayingRef.current = true;
-        // Remove from queue
         delete audioQueueRef.current[index];
         nextExpectedIndexRef.current++;
 
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        currentAudioRef.current = audio;
-
-        // Cleanup function for when this audio ends
         const handleEnd = () => {
-            URL.revokeObjectURL(url);
             currentAudioRef.current = null;
             if (typewriterRef.current) clearInterval(typewriterRef.current);
-
-            // Ensure full text is displayed (fixing any typewriter rounding errors) or handled in typeWriter 'done'
             playNextAudio();
         };
 
-        audio.onended = handleEnd;
+        if (blob) {
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.playbackRate = 1.5; // Speed up audio 1.5x
+            currentAudioRef.current = audio;
 
-        audio.onerror = (e) => {
-            console.error("Audio playback error", e);
-            // Fallback: show text immediately
-            setMessages(prev => {
-                const lastMsg = prev[prev.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant') {
-                    return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + text }];
-                } else {
-                    return [...prev, { role: 'assistant', content: text, isFinal: false }];
-                }
-            });
-            handleEnd();
-        };
+            audio.onended = () => {
+                URL.revokeObjectURL(url);
+                handleEnd();
+            };
 
-        try {
-            await audio.play();
-            // Playback started, metadata should be ready
-            const duration = audio.duration;
-            const typingSpeedMultiplier = 0.93; // 0.9 means 10% faster printing
-            const validDuration = (duration && duration !== Infinity && !isNaN(duration))
-                ? (duration * 1000) * typingSpeedMultiplier
-                : (text.length * 54); // Fallback: 54ms per char (was 60)
+            audio.onerror = (e) => {
+                console.error("Audio playback error", e);
+                URL.revokeObjectURL(url);
+                // Fallback to Browser TTS
+                speakWithBrowser(text, handleEnd);
+            };
 
-            startTypewriter(text, Math.max(0, validDuration - 100)); // Still keep -100ms offset for safety
-        } catch (e) {
-            console.error("Autoplay failed", e);
-            // Fallback: show text immediately
-            setMessages(prev => {
-                const lastMsg = prev[prev.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant') {
-                    return [...prev.slice(0, -1), { ...lastMsg, content: lastMsg.content + text }];
-                } else {
-                    return [...prev, { role: 'assistant', content: text, isFinal: false }];
-                }
-            });
-            handleEnd();
+            try {
+                await audio.play();
+                const duration = audio.duration;
+                // Since audio plays 1.5x faster, the typewriter duration must be divided by 1.5
+                const typingSpeedMultiplier = 0.93 / 1.5;
+                const validDuration = (duration && duration !== Infinity && !isNaN(duration))
+                    ? (duration * 1000) * typingSpeedMultiplier
+                    : (text.length * (54 / 1.5));
+
+                startTypewriter(text, Math.max(0, validDuration - 50));
+            } catch (e) {
+                console.error("Autoplay failed", e);
+                speakWithBrowser(text, handleEnd);
+            }
+        } else {
+            // Text-only signal from server -> Use Browser TTS
+            speakWithBrowser(text, handleEnd);
         }
+    };
+
+    const speakWithBrowser = async (text, onDone) => {
+        // Client-side Edge TTS spoofing is blocked by CORS origin policies in Chrome.
+        // We revert to robust native synthesis as the primary fallback for all browsers.
+        fallbackToNative(text, onDone);
+    };
+
+    const fallbackToNative = (text, onDone) => {
+        if (!window.speechSynthesis) {
+            startTypewriter(text, text.length * 30); // Pre-calculated for ~1.5x speed
+            setTimeout(onDone, text.length * 30 + 100);
+            return;
+        }
+
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ru-RU';
+        utterance.rate = 1.5; // Speed up native TTS 1.5x
+
+        const voices = window.speechSynthesis.getVoices();
+        // Priority: Microsoft Dmitry (Edge/Win) > Google Russian (Chrome) > Any Russian
+        const russianVoice =
+            voices.find(v => v.lang === 'ru-RU' && v.name.includes('Dmitry')) ||
+            voices.find(v => v.lang === 'ru-RU' && v.name.includes('Google')) ||
+            voices.find(v => v.lang.startsWith('ru')) ||
+            voices[0];
+
+        if (russianVoice) utterance.voice = russianVoice;
+        // Estimated duration for typewriter adjusted for 1.5x
+        utterance.onstart = () => startTypewriter(text, text.length * 40);
+        utterance.onend = onDone;
+        window.speechSynthesis.speak(utterance);
     };
 
     const startTypewriter = (textToType, durationMs) => {
@@ -257,10 +284,15 @@ const NexusChat = () => {
         const audio = new Audio(`${SOCKET_URL}/slova/${randomFile}`);
         fillerAudioRef.current = audio;
         audio.volume = 0.5; // Lower volume for fillers
-        audio.play().catch(e => {
-            console.error("Filler play error:", e);
-            fillerAudioRef.current = null;
-        });
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(e => {
+                if (e.name !== 'AbortError') {
+                    console.error("Filler play error:", e);
+                }
+                fillerAudioRef.current = null;
+            });
+        }
 
         audio.onended = () => {
             fillerAudioRef.current = null; // Important to clear this!
@@ -273,6 +305,8 @@ const NexusChat = () => {
 
     const stopFillerSound = () => {
         if (fillerAudioRef.current) {
+            // We don't strictly need to wait for the promise here,
+            // but calling pause() will trigger the catch block in playFillerSound.
             fillerAudioRef.current.pause();
             fillerAudioRef.current = null;
         }
@@ -400,7 +434,7 @@ const NexusChat = () => {
             const formData = new FormData();
             formData.append('file', blob, 'recording.wav');
 
-            const response = await fetch('http://localhost:3001/transcribe', {
+            const response = await fetch(`${SOCKET_URL}/transcribe`, {
                 method: 'POST',
                 body: formData,
             });

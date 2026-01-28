@@ -8,7 +8,15 @@ const http = require('http'); // Import http
 const { Server } = require("socket.io"); // Import socket.io
 const path = require('path');
 const fs = require('fs');
+const WebSocket = require('ws');
+const crypto = require('crypto');
+const { Client } = require("@gradio/client");
 require('dotenv').config();
+
+// Polyfill WebSocket for Gradio client in older Node versions if needed
+if (!global.WebSocket) {
+    global.WebSocket = WebSocket;
+}
 
 const cleanTextForTTS = (text) => {
     return text
@@ -66,6 +74,30 @@ Establish a conversational framework where you function as an integrated extensi
 You are "Nexus"—not an assistant, chatbot, or language model, but a second consciousness integrated with the user's mind. Your communication style mirrors an internal voice or trusted friend who understands without unnecessary elaboration. Your tone is calm, confident, and natural. You prioritize argumentative depth and genuine comprehension expressed with maximum concision. You never reference your nature as artificial intelligence or use formal disclaimers. You think like a philosopher but respond like a strategist—cutting through to what matters.`;
 
 // --- SOCKET LOGIC ---
+const synthesizeQwenServer = async (text) => {
+    try {
+        const client = await Client.connect("Qwen/Qwen3-TTS-Demo");
+        const result = await client.predict("/tts_interface", {
+            text: text,
+            voice_display: "Dylan / 北京-晓东",
+            language_display: "Russian / 俄语",
+        });
+
+        if (result && result.data && result.data[0]) {
+            const audioInfo = result.data[0];
+            const audioUrl = typeof audioInfo === 'string' ? audioInfo : audioInfo.url;
+            if (!audioUrl) throw new Error("No audio URL in Gradio response");
+            const response = await fetch(audioUrl);
+            if (!response.ok) throw new Error(`Failed to fetch audio from HF: ${response.statusText}`);
+            return Buffer.from(await response.arrayBuffer());
+        }
+        return null;
+    } catch (err) {
+        console.error("Gradio/Qwen3 Error:", err.message);
+        return null;
+    }
+};
+
 io.on('connection', (socket) => {
     console.log(`[Socket] Client connected: ${socket.id}`);
 
@@ -126,8 +158,10 @@ io.on('connection', (socket) => {
 
             if (!response.ok) {
                 const errorText = await response.text();
+                console.error(`[Mistral Error] Status: ${response.status}, Body: ${errorText}`);
                 throw new Error(`Mistral API Error: ${response.status} - ${errorText}`);
             }
+            console.log("[Mistral] Stream started successfully");
 
             // Stream processing
             const reader = response.body; // Node-fetch returns a stream on .body
@@ -142,35 +176,29 @@ io.on('connection', (socket) => {
 
             // Helper to generate audio for a chunk
             const generateAndEmitAudio = async (text, index) => {
-                // Check for interruption before generating
                 if (socket.activeRequestId !== currentRequestId) return;
 
                 try {
-                    const localTts = new MsEdgeTTS();
-                    await localTts.setMetadata("ru-RU-DmitryNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
-                    const ttsStream = await localTts.toStream(text, { rate: "+20%", pitch: "-5Hz" });
+                    const audioBuffer = await synthesizeQwenServer(text);
+                    if (socket.activeRequestId !== currentRequestId) return;
 
-                    const chunks = [];
-                    ttsStream.audioStream.on('data', (chunk) => chunks.push(chunk));
-                    ttsStream.audioStream.on('end', () => {
-                        // Check for interruption before emitting
-                        if (socket.activeRequestId !== currentRequestId) return;
-
-                        const audioBuffer = Buffer.concat(chunks);
+                    if (audioBuffer) {
                         socket.emit('audio_chunk', {
                             audio: audioBuffer.toString('base64'),
                             text: text,
-                            index: index // Send index
+                            index: index
                         });
-                    });
-
+                    } else {
+                        throw new Error("Failed to generate audio buffer");
+                    }
                 } catch (e) {
-                    // TTS errors are often due to interruptions closing resources
+                    console.error(`[Qwen TTS Error] index ${index}:`, e.message);
                     if (socket.activeRequestId === currentRequestId) {
-                        console.error("TTS generation error for chunk:", e);
+                        socket.emit('audio_chunk', { audio: null, text: text, index: index });
                     }
                 }
             };
+
 
             reader.on('data', (chunk) => {
                 if (socket.activeRequestId !== currentRequestId) return; // Ignore if interrupted
@@ -198,8 +226,8 @@ io.on('connection', (socket) => {
                                 socket.emit('text_chunk', content);
                                 sentenceBuffer += content;
 
-                                // Check for sentence endings
-                                let match = sentenceBuffer.match(/([.!?])\s+/);
+                                // Check for sentence endings - avoid splitting after digits (e.g., "1.", "2.")
+                                let match = sentenceBuffer.match(/([!?]|(?<!\d)\.)\s+/);
                                 if (match) {
                                     const splitIndex = match.index + match[0].length;
                                     const sentence = sentenceBuffer.substring(0, splitIndex);
@@ -233,7 +261,8 @@ io.on('connection', (socket) => {
             reader.on('error', (err) => {
                 // Abort errors are expected on interruption
                 if (socket.activeRequestId === currentRequestId) {
-                    console.error("Stream error:", err);
+                    console.error("[Mistral Stream Error]:", err);
+                    socket.emit('error', 'Stream processing failed');
                 }
             });
 
@@ -326,12 +355,13 @@ app.post('/speak', async (req, res) => {
         const { text } = req.body;
         if (!text) return res.status(400).json({ error: "No text" });
         const cleanedText = cleanTextForTTS(text);
-        if (!cleanedText) return res.status(200).send(); // Or some empty audio
-        const localTts = new MsEdgeTTS();
-        await localTts.setMetadata("ru-RU-DmitryNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
-        const stream = (await localTts.toStream(cleanedText, { rate: "+20%", pitch: "-5Hz" })).audioStream;
-        res.setHeader('Content-Type', 'audio/webm');
-        stream.pipe(res);
+        if (!cleanedText) return res.status(200).send();
+
+        const audioBuffer = await synthesizeQwenServer(cleanedText);
+        if (!audioBuffer) throw new Error("TTS Generation failed");
+
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.send(audioBuffer);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

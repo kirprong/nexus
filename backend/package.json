@@ -8,6 +8,7 @@
         "dev": "nodemon server.js"
     },
     "dependencies": {
+        "@gradio/client": "^2.0.3",
         "cors": "^2.8.5",
         "dotenv": "^16.4.5",
         "express": "^4.17.1",
@@ -15,7 +16,8 @@
         "msedge-tts": "^2.0.4",
         "multer": "^2.0.2",
         "node-fetch": "^2.6.7",
-        "socket.io": "^4.8.3"
+        "socket.io": "^4.8.3",
+        "ws": "^8.19.0"
     },
     "engines": {
         "node": ">=14.0.0"
