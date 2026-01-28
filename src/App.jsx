@@ -16,7 +16,7 @@ const NexusChat = () => {
     const mediaRecorderRef = useRef(null);
     const audioChunksRef = useRef([]);
     const socketRef = useRef(null);
-    const typewriterRef = useRef(null); // To manage typing interval
+    const typewriterRef = useRef(null); // To manage typing interval 
 
     // --- AUDIO QUEUE SYSTEM ---
     const audioQueueRef = useRef({}); // Using object for indexed storage
@@ -24,7 +24,8 @@ const NexusChat = () => {
     const nextExpectedIndexRef = useRef(0); // Sequence tracker
     const currentAudioRef = useRef(null); // To stop audio if needed
     const fillerAudioRef = useRef(null); // Reference for filler audio
-    const fillerFilesRef = useRef([]); // Store list of filler files
+    const fillerFilesRef = useRef([]); // Store original list of filler files
+    const fillerQueueRef = useRef([]); // Shuffled queue of fillers to play
     const isWaitingForResponseRef = useRef(false); // Ref to track waiting state for fillers
     const isInterruptedRef = useRef(false); // Track interruption state
 
@@ -277,28 +278,49 @@ const NexusChat = () => {
 
 
     const playFillerSound = () => {
-        if (!isWaitingForResponseRef.current || fillerFilesRef.current.length === 0) return;
-        if (fillerAudioRef.current) return; // Don't stack fillers
+        if (!isWaitingForResponseRef.current || fillerFilesRef.current.length === 0) {
+            console.log("Not playing filler: waiting:", isWaitingForResponseRef.current, "count:", fillerFilesRef.current.length);
+            return;
+        }
 
-        const randomFile = fillerFilesRef.current[Math.floor(Math.random() * fillerFilesRef.current.length)];
-        const audio = new Audio(`${SOCKET_URL}/slova/${randomFile}`);
+        if (fillerAudioRef.current) {
+            console.log("Filler already playing, skipping overlap");
+            return; // Don't stack fillers
+        }
+
+        // Initialize or refill the queue if empty
+        if (fillerQueueRef.current.length === 0) {
+            console.log("Refilling filler queue...");
+            fillerQueueRef.current = [...fillerFilesRef.current].sort(() => Math.random() - 0.5);
+        }
+
+        const nextFile = fillerQueueRef.current.pop();
+        console.log(`Playing filler: ${nextFile} (${fillerQueueRef.current.length} left in queue)`);
+
+        const audio = new Audio(`${SOCKET_URL}/slova/${nextFile}`);
         fillerAudioRef.current = audio;
-        audio.volume = 0.5; // Lower volume for fillers
+        audio.volume = 0.45;
+
         const playPromise = audio.play();
         if (playPromise !== undefined) {
             playPromise.catch(e => {
                 if (e.name !== 'AbortError') {
                     console.error("Filler play error:", e);
+                    fillerAudioRef.current = null;
+                    // Try next filler if current one fails
+                    if (isWaitingForResponseRef.current) {
+                        setTimeout(playFillerSound, 100);
+                    }
                 }
-                fillerAudioRef.current = null;
             });
         }
 
         audio.onended = () => {
-            fillerAudioRef.current = null; // Important to clear this!
+            console.log("Filler ended.");
+            fillerAudioRef.current = null;
             if (isWaitingForResponseRef.current) {
-                console.log("Playing next filler...");
-                playFillerSound();
+                // Short delay to avoid call stack issues and give a tiny breather
+                setTimeout(playFillerSound, 50);
             }
         };
     };
