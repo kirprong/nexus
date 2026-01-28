@@ -75,11 +75,11 @@ const NexusChat = () => {
         socketRef.current.on('audio_chunk', (data) => {
             if (isInterruptedRef.current) return;
 
-            // Stop fillers only when the FIRST chunk (index 0) arrives
-            if (data.index === 0) {
-                isWaitingForResponseRef.current = false;
-                stopFillerSound();
-            }
+            // Mark that we're no longer waiting (but don't stop filler yet)
+            // Mark that we're no longer waiting (but don't stop filler yet)
+            // if (data.index === 0) {
+            //     isWaitingForResponseRef.current = false;
+            // }
 
             let blob = null;
             if (data.audio) {
@@ -107,9 +107,8 @@ const NexusChat = () => {
             if (isInterruptedRef.current) return;
             setIsLoading(false);
 
-            // Safety: stop fillers if they are still playing somehow
-            isWaitingForResponseRef.current = false;
-            stopFillerSound();
+            // УДАЛЯЕМ всю логику остановки филлера здесь
+            // Филлер останавливается ТОЛЬКО в playNextAudio при первом чанке
 
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
@@ -164,6 +163,15 @@ const NexusChat = () => {
             audio.playbackRate = 1.2; // Speed up audio 1.2x
             currentAudioRef.current = audio;
 
+            // Stop filler when FIRST audio actually starts playing (with overlap)
+            audio.onplaying = () => {
+                if (index === 0) {
+                    console.log("First audio chunk started, stopping filler...");
+                    isWaitingForResponseRef.current = false;
+                    stopFillerSound();  // ← Без задержки, сразу
+                }
+            };
+
             audio.onended = () => {
                 URL.revokeObjectURL(url);
                 handleEnd();
@@ -199,6 +207,7 @@ const NexusChat = () => {
     const speakWithBrowser = async (text, onDone) => {
         // Client-side Edge TTS spoofing is blocked by CORS origin policies in Chrome.
         // We revert to robust native synthesis as the primary fallback for all browsers.
+        stopFillerSound();
         fallbackToNative(text, onDone);
     };
 
@@ -330,6 +339,7 @@ const NexusChat = () => {
 
     const stopFillerSound = () => {
         if (fillerAudioRef.current) {
+            console.log("Stopping filler sound...");
             // We don't strictly need to wait for the promise here,
             // but calling pause() will trigger the catch block in playFillerSound.
             fillerAudioRef.current.pause();
