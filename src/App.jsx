@@ -157,7 +157,7 @@ const NexusChat = () => {
         if (blob) {
             const url = URL.createObjectURL(blob);
             const audio = new Audio(url);
-            audio.playbackRate = 1.5; // Speed up audio 1.5x
+            audio.playbackRate = 1.2; // Speed up audio 1.2x
             currentAudioRef.current = audio;
 
             audio.onended = () => {
@@ -176,10 +176,10 @@ const NexusChat = () => {
                 await audio.play();
                 const duration = audio.duration;
                 // Since audio plays 1.5x faster, the typewriter duration must be divided by 1.5
-                const typingSpeedMultiplier = 0.93 / 1.5;
+                const typingSpeedMultiplier = 0.93 / 1.2;
                 const validDuration = (duration && duration !== Infinity && !isNaN(duration))
                     ? (duration * 1000) * typingSpeedMultiplier
-                    : (text.length * (54 / 1.5));
+                    : (text.length * (54 / 1.2));
 
                 startTypewriter(text, Math.max(0, validDuration - 50));
             } catch (e) {
@@ -200,15 +200,15 @@ const NexusChat = () => {
 
     const fallbackToNative = (text, onDone) => {
         if (!window.speechSynthesis) {
-            startTypewriter(text, text.length * 30); // Pre-calculated for ~1.5x speed
-            setTimeout(onDone, text.length * 30 + 100);
+            startTypewriter(text, text.length * 38); // Pre-calculated for ~1.2x speed
+            setTimeout(onDone, text.length * 38 + 100);
             return;
         }
 
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ru-RU';
-        utterance.rate = 1.5; // Speed up native TTS 1.5x
+        utterance.rate = 1.2; // Speed up native TTS 1.2x
 
         const voices = window.speechSynthesis.getVoices();
         // Priority: Microsoft Dmitry (Edge/Win) > Google Russian (Chrome) > Any Russian
@@ -219,8 +219,8 @@ const NexusChat = () => {
             voices[0];
 
         if (russianVoice) utterance.voice = russianVoice;
-        // Estimated duration for typewriter adjusted for 1.5x
-        utterance.onstart = () => startTypewriter(text, text.length * 40);
+        // Estimated duration for typewriter adjusted for 1.2x
+        utterance.onstart = () => startTypewriter(text, text.length * 50);
         utterance.onend = onDone;
         window.speechSynthesis.speak(utterance);
     };
